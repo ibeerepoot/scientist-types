@@ -19,6 +19,13 @@ with st.sidebar:
     st.header('Upload your data')
     st.markdown('**1. AWT data**')
     awt_uploaded_file = st.file_uploader("Upload your Tockler data here. You can export your data by going to Tockler > Search > Set a time period > Export to CSV.")
+    # Add a selectbox to choose delimiter
+    delimiter = st.radio(
+        "Select the delimiter used in your CSV file:",
+        options=[',', ';'],
+        index=0,  # Default to comma
+        horizontal=True
+    )
 
     # Load Survey results data
     st.markdown('**2. Survey results**')
@@ -27,11 +34,27 @@ with st.sidebar:
 # Main section for processing AWT data
 if awt_uploaded_file is not None:
     try:
-        # Read the uploaded CSV file into a dataframe
+        # Read the uploaded CSV file into a string
         awt_stringio = StringIO(awt_uploaded_file.getvalue().decode('latin1'))
-        
-        # Explicitly set the delimiter as semicolon
-        dataframe_awt = pd.read_csv(awt_stringio, delimiter=';')
+
+        # Read the CSV file into a DataFrame using the selected delimiter
+        try:
+            dataframe_awt = pd.read_csv(awt_stringio, delimiter=delimiter)
+        except Exception as e:
+            st.error(f"An error occurred while reading the CSV file: {e}")
+
+        # Check if the first column name is not 'App'
+        if dataframe_awt.columns[0] != 'App':
+            # Rename the first column to 'App'
+            dataframe_awt.rename(columns={dataframe_awt.columns[0]: 'App'}, inplace=True)
+
+        # Convert 'Begin' column to datetime with the specified format
+        if 'Begin' in dataframe_awt.columns:
+            dataframe_awt['Begin'] = pd.to_datetime(dataframe_awt['Begin'], errors='coerce').dt.strftime('%Y-%m-%d %H:%M:%S')
+
+        # Convert 'End' column to datetime with the specified format
+        if 'End' in dataframe_awt.columns:
+            dataframe_awt['End'] = pd.to_datetime(dataframe_awt['End'], errors='coerce').dt.strftime('%Y-%m-%d %H:%M:%S')
 
         # Drop the 'Type' column if it exists
         if 'Type' in dataframe_awt.columns:
@@ -150,18 +173,38 @@ if survey_uploaded_file is not None and awt_uploaded_file is not None:
     # Calculate the duration (End - Begin) in seconds
     dataframe_awt['Duration'] = (dataframe_awt['End'] - dataframe_awt['Begin']).dt.total_seconds()
 
-    # Group by 'App' and sum the durations for each app
-    # app_time_spent = dataframe_awt.groupby('App')['Duration'].sum()
+    with st.popover('Change Standard Apps'):
+        # Group by 'App' and sum the durations for each app
+        app_time_spent = dataframe_awt.groupby('App')['Duration'].sum()
 
-    # Get the top 5 apps with the most time spent
-    # top_5_time_spent_apps = app_time_spent.nlargest(5)
+        # Get the top 10 apps with the most time spent
+        top_10_time_spent_apps = app_time_spent.nlargest(10)
 
-    # Convert duration from seconds to a more readable format (hours, minutes, or keep in seconds)
-    # top_5_time_spent_apps_readable = top_5_time_spent_apps / 3600  # Converts seconds to hours
+        # Convert duration from seconds to hours
+        top_10_time_spent_apps_readable = top_10_time_spent_apps / 3600  # Converts seconds to hours
 
-    # Display the result
-    # st.write("Top 5 Apps with Most Time Spent (in hours):")
-    # st.write(top_5_time_spent_apps_readable)
+        # Create a DataFrame for the top 10 apps for editing
+        top_10_df = pd.DataFrame({
+            'App': top_10_time_spent_apps_readable.index,
+            'Time Spent (hours)': top_10_time_spent_apps_readable.values,
+            'Is Standard Browser': [False] * len(top_10_time_spent_apps_readable),  # Add columns for user input
+            'Is Standard PDF Tool': [False] * len(top_10_time_spent_apps_readable)   # Add columns for user input
+        })
+
+        # Use st.data_editor to allow the user to specify their standard browser and PDF tool
+        edited_df = st.data_editor(
+            top_10_df,
+            num_rows="dynamic",  # Allows adding/removing rows
+            use_container_width=True
+        )
+
+        # Extract the selected standard browser and PDF tool
+        standard_browser_series = edited_df[edited_df['Is Standard Browser']]['App']
+        standard_pdf_tool_series = edited_df[edited_df['Is Standard PDF Tool']]['App']
+
+        # Extract the selected standard browser and PDF tool
+        standard_browser = standard_browser_series.iloc[0] if not standard_browser_series.empty else ''
+        standard_pdf_tool = standard_pdf_tool_series.iloc[0] if not standard_pdf_tool_series.empty else ''
 
     # Extract the date from the Begin column
     dataframe_awt['Date'] = dataframe_awt['Begin'].dt.date
@@ -907,16 +950,22 @@ if survey_uploaded_file is not None and awt_uploaded_file is not None:
             'Start Time (Decimal)', 'End Time (Decimal)', 'Total Time Spent (hours)',
             'Median Time of Day',
             'Total Work Slots_x', 'Average Work Slot Duration_x',
-            'Share of Work Slots with Most Frequent Title', 
-            'Time in Google Chrome', 'Time in Microsoft Outlook', 'Time in Adobe Acrobat ', 
-            'Time in Microsoft Excel', 
-            'Time in Microsoft Word', 'Count of Google Chrome', 'Count of Microsoft Outlook', 
-            'Count of Adobe Acrobat ', 'Count of Microsoft Excel', 
+            'Share of Work Slots with Most Frequent Title',
+            f'Time in {standard_browser}' if standard_browser else 'Time in Google Chrome',
+            'Time in Microsoft Outlook',
+            f'Time in {standard_pdf_tool}' if standard_pdf_tool else 'Time in Adobe Acrobat',
+            'Time in Microsoft Excel',
+            'Time in Microsoft Word',
+            f'Count of {standard_browser}' if standard_browser else 'Count of Google Chrome',
+            'Count of Microsoft Outlook',
+            f'Count of {standard_pdf_tool}' if standard_pdf_tool else 'Count of Adobe Acrobat',
+            'Count of Microsoft Excel',
             'Count of Microsoft Word', 'Title_count', 'Unique Titles',
             'Duration of Longest Title', 'Share of Unique Titles',
             'Title count per hour on computer', 'Total Breaks',
             'Average Break Duration', 'Relative break time'
         ]
+
 
         # Step 2: Extract the subset of data
         subset_data = merged_dataframe[columns_of_interest + rows_of_interest]
@@ -933,11 +982,11 @@ if survey_uploaded_file is not None and awt_uploaded_file is not None:
         # Step 5: Create a heatmap using Altair
         heatmap = alt.Chart(correlation_df).mark_rect().encode(
             x=alt.X('Column:O', title=''),
-            y=alt.Y('Row:O', title='', sort=rows_of_interest, axis=alt.Axis(labelPadding=10)),
+            y=alt.Y('Row:O', title='', sort=rows_of_interest, axis=alt.Axis(labelFontSize=8, labelPadding=5)),
             color=alt.Color('Correlation:Q', scale=alt.Scale(scheme='redblue', domain=[-1, 1])),
             tooltip=['Row', 'Column', 'Correlation']
         ).properties(
-            width=100,
+            width=400,
             height=800,
             title='Correlation Matrix of Selected Features'
         )
